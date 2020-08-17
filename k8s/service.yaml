@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: service
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: artifactcache
+    app.kubernetes.io/component: service
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service
+data:
+  ARTIFACTCACHE_BUCKET: artifactcache
+  AWS_REGION: us-east-1
