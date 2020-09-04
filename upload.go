@@ -2,11 +2,23 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	"github.com/julienschmidt/httprouter"
+)
+
+const (
+	indexRangeStart = 3
+	indexRangeEnd   = 4
+	groupLength     = 7
+)
+
+var (
+	regexContentRange = regexp.MustCompile(`(?P<Unit>\w+) ((?P<RangeStart>\d+)-(?P<RangeEnd>\d+)|\*)/((?P<Size>\d+)|\*)`)
 )
 
 type ReserveCacheRequest struct {
@@ -62,7 +74,32 @@ func patchUploadCache(w http.ResponseWriter, r *http.Request, ps httprouter.Para
 		return
 	}
 
-	if err := uploadPart(cacheId, r.Body); err != nil {
+	contentRange := regexContentRange.FindStringSubmatch(r.Header.Get("Content-Range"))
+	if contentRange == nil || len(contentRange) != groupLength {
+		err := errors.New("contentRange == nil || len(contentRange) != groupLength")
+		log.Print(err)
+
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rangeStart, err := strconv.Atoi(contentRange[indexRangeStart])
+	if err != nil {
+		log.Print(err)
+
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rangeEnd, err := strconv.Atoi(contentRange[indexRangeEnd])
+	if err != nil {
+		log.Print(err)
+
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := uploadPart(cacheId, rangeStart, rangeEnd, r.Body); err != nil {
 		log.Print(err)
 
 		http.Error(w, err.Error(), http.StatusInternalServerError)

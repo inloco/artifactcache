@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"os"
 	"sync"
@@ -28,6 +27,9 @@ type UploadMemory struct {
 	ObjectKey
 	UploadId string
 	ETags    []string
+	Cond     *sync.Cond
+	Next     int
+	Part     int
 }
 
 type ObjectKey struct {
@@ -89,21 +91,40 @@ func createMultipartUpload(objectKey ObjectKey) (int, error) {
 
 	cacheId := int(rand.Int31())
 
-	memory.Store(cacheId, UploadMemory{
+	memory.Store(cacheId, &UploadMemory{
 		ObjectKey: objectKey,
 		UploadId:  aws.StringValue(res.UploadId),
 		ETags:     []string{},
+		Cond:      sync.NewCond(&sync.Mutex{}),
+		Next:      0,
+		Part:      0,
 	})
 
 	return cacheId, nil
 }
 
-func uploadPart(cacheId int, body io.Reader) error {
-	value, loaded := memory.LoadAndDelete(cacheId)
+func uploadPart(cacheId int, rangeStart int, rangeEnd int, body io.Reader) error {
+	value, loaded := memory.Load(cacheId)
 	if !loaded {
 		return fmt.Errorf("no memory of cache id %d", cacheId)
 	}
-	uploadMemory := value.(UploadMemory)
+	uploadMemory := value.(*UploadMemory)
+	if uploadMemory == nil {
+		return fmt.Errorf("no memory of cache id %d", cacheId)
+	}
+
+	uploadMemory.Cond.L.Lock()
+	for uploadMemory.Next != rangeStart {
+		uploadMemory.Cond.Wait()
+	}
+	uploadMemory.Part++
+	req := s3.UploadPartInput{
+		Bucket:     aws.String(bucket),
+		Key:        aws.String(uploadMemory.ObjectKey.String()),
+		UploadId:   aws.String(uploadMemory.UploadId),
+		PartNumber: aws.Int64(int64(uploadMemory.Part)),
+	}
+	uploadMemory.Cond.L.Unlock()
 
 	// https://github.com/aws/aws-sdk-go/issues/142#issuecomment-257558022
 	// https://github.com/aws/aws-sdk-go/issues/3063#issuecomment-571279246
@@ -111,23 +132,18 @@ func uploadPart(cacheId int, body io.Reader) error {
 	if err != nil {
 		return err
 	}
-
-	req := s3.UploadPartInput{
-		Bucket:     aws.String(bucket),
-		Key:        aws.String(uploadMemory.ObjectKey.String()),
-		UploadId:   aws.String(uploadMemory.UploadId),
-		PartNumber: aws.Int64(int64(len(uploadMemory.ETags) + 1)),
-		Body:       bytes.NewReader(unchunked),
-	}
-	log.Print(req)
+	req.Body = bytes.NewReader(unchunked)
 
 	res, err := client.UploadPart(&req)
 	if err != nil {
 		return err
 	}
 
+	uploadMemory.Cond.L.Lock()
 	uploadMemory.ETags = append(uploadMemory.ETags, aws.StringValue(res.ETag))
-	memory.Store(cacheId, uploadMemory)
+	uploadMemory.Next = rangeEnd + 1
+	uploadMemory.Cond.Broadcast()
+	uploadMemory.Cond.L.Unlock()
 
 	return nil
 }
@@ -137,7 +153,7 @@ func completeMultipartUpload(cacheId int) error {
 	if !loaded {
 		return fmt.Errorf("no memory of cache id %d", cacheId)
 	}
-	uploadMemory := value.(UploadMemory)
+	uploadMemory := value.(*UploadMemory)
 
 	completedMultipartUpload := &s3.CompletedMultipartUpload{}
 	for i, eTag := range uploadMemory.ETags {
