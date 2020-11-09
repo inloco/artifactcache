@@ -62,7 +62,7 @@ func lookupObject(objectKey ObjectKey) (*ObjectHead, error) {
 		k := aws.StringValue(obj.Key)
 		lm := aws.TimeValue(obj.LastModified)
 
-		if eq := k == objectKey.Key; eq || lm.Before(head.LastModified) {
+		if eq := k == objectKey.Key; eq || lm.After(head.LastModified) {
 			head.Key = k
 			head.LastModified = lm
 
