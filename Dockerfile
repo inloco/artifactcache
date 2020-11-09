@@ -9,6 +9,6 @@ COPY ./*.go ./
 RUN go install -a -gcflags 'all=-N -l' -ldflags '-d -extldflags "-fno-PIC -static"' -tags 'netgo osusergo static_build' -trimpath -v ./...
 
 FROM gcr.io/distroless/static:nonroot AS runtime
-COPY --from=build /go/bin/dlv /sbin/dlv
+COPY --from=build /go/bin/dlv /usr/local/bin/dlv
 COPY --from=build /go/bin/artifactcache /sbin/init
 ENTRYPOINT ["/sbin/init"]
