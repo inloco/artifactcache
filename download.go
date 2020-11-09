@@ -25,26 +25,26 @@ func getCacheEntry(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 		Version:  r.URL.Query().Get("version"),
 	}
 
-	var timestamp time.Time
+	var objectHead *ObjectHead
 	for _, key := range strings.Split(r.URL.Query().Get("keys"), ",") {
 		objectKey.Key = key
 
-		t, err := headObject(objectKey)
+		head, err := lookupObject(objectKey)
 		if err != nil {
 			log.Print(err)
 			continue
 		}
 
-		timestamp = t
+		objectHead = head
 		break
 	}
 
-	if timestamp == (time.Time{}) {
+	if objectHead == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	url, err := presignGetObjectRequest(objectKey)
+	url, err := presignGetObjectRequest(*objectHead)
 	if err != nil {
 		log.Print(err)
 
@@ -59,7 +59,7 @@ func getCacheEntry(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 		ArchiveLocation: url,
 		CacheKey:        objectKey.Key,
 		CacheVersion:    objectKey.Version,
-		CreationTime:    timestamp.Format(time.RFC3339),
+		CreationTime:    objectHead.LastModified.Format(time.RFC3339),
 		Scope:           objectKey.Scope,
 	}
 	if err := json.NewEncoder(w).Encode(cacheEntry); err != nil {

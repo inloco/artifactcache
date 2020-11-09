@@ -23,15 +23,6 @@ var (
 	memory = sync.Map{}
 )
 
-type UploadMemory struct {
-	ObjectKey
-	UploadId string
-	ETags    []string
-	Cond     *sync.Cond
-	Next     int
-	Part     int
-}
-
 type ObjectKey struct {
 	Audience string
 	Scope    string
@@ -40,42 +31,66 @@ type ObjectKey struct {
 }
 
 func (k ObjectKey) String() string {
-	audience16 := md5.Sum([]byte(k.Audience))
-	audience64 := base64.RawURLEncoding.EncodeToString(audience16[:])
+	prefix16 := md5.Sum([]byte(k.Audience + k.Scope + k.Version))
+	prefix64 := base64.RawURLEncoding.EncodeToString(prefix16[:])
 
-	scope16 := md5.Sum([]byte(k.Scope))
-	scope64 := base64.RawURLEncoding.EncodeToString(scope16[:])
-
-	key16 := md5.Sum([]byte(k.Key))
-	key64 := base64.RawURLEncoding.EncodeToString(key16[:])
-
-	version16 := md5.Sum([]byte(k.Version))
-	version64 := base64.RawURLEncoding.EncodeToString(version16[:])
-
-	return fmt.Sprintf("%s/%s/%s/%s", audience64, scope64, key64, version64)
+	return fmt.Sprintf("%s/%s", prefix64, k.Key)
 }
 
-func headObject(objectKey ObjectKey) (time.Time, error) {
-	req := s3.HeadObjectInput{
+type ObjectHead struct {
+	Key          string
+	LastModified time.Time
+}
+
+func lookupObject(objectKey ObjectKey) (*ObjectHead, error) {
+	req := s3.ListObjectsInput{
 		Bucket: aws.String(bucket),
-		Key:    aws.String(objectKey.String()),
+		Prefix: aws.String(objectKey.String()),
 	}
 
-	res, err := client.HeadObject(&req)
+	res, err := client.ListObjects(&req)
 	if err != nil {
-		return time.Time{}, err
+		return nil, err
 	}
 
-	return aws.TimeValue(res.LastModified), nil
+	if len(res.Contents) == 0 {
+		return nil, nil
+	}
+
+	var head ObjectHead
+	for _, obj := range res.Contents {
+		k := aws.StringValue(obj.Key)
+		lm := aws.TimeValue(obj.LastModified)
+
+		if eq := k == objectKey.Key; eq || lm.Before(head.LastModified) {
+			head.Key = k
+			head.LastModified = lm
+
+			if eq {
+				break
+			}
+		}
+	}
+
+	return &head, nil
 }
 
-func presignGetObjectRequest(objectKey ObjectKey) (string, error) {
+func presignGetObjectRequest(objectHead ObjectHead) (string, error) {
 	req, _ := client.GetObjectRequest(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
-		Key:    aws.String(objectKey.String()),
+		Key:    aws.String(objectHead.Key),
 	})
 
 	return req.Presign(time.Minute)
+}
+
+type UploadMemory struct {
+	ObjectKey
+	UploadId string
+	ETags    []string
+	Cond     *sync.Cond
+	Next     int
+	Part     int
 }
 
 func createMultipartUpload(objectKey ObjectKey) (int, error) {
