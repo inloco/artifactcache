@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -126,4 +129,51 @@ func postCommitCache(w http.ResponseWriter, r *http.Request, ps httprouter.Param
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type AssumeRoleUploadResponse struct {
+	ObjectS3URI     string
+	AccessKeyId     string
+	SecretAccessKey string
+	SessionToken    string
+}
+
+func getAssumeRoleUpload(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	objectKey := ObjectKey{
+		Audience: ps.ByName("audience"),
+		Scope:    ps.ByName("scope"),
+		Key:      ps.ByName("key"),
+		Version:  "",
+	}
+	key := objectKey.String()
+
+	sessionName := objectKey.Audience[strings.LastIndex(objectKey.Audience, ":")+1:]
+	if len(sessionName) > 64 {
+		sessionName = sessionName[:64]
+	}
+
+	credentials, err := assumeRole(sessionName, uploadPolicy(key))
+	if err != nil {
+		log.Print(err)
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := AssumeRoleUploadResponse{
+		ObjectS3URI:     fmt.Sprintf("s3://%s/%s", BucketName, key),
+		AccessKeyId:     aws.StringValue(credentials.AccessKeyId),
+		SecretAccessKey: aws.StringValue(credentials.SecretAccessKey),
+		SessionToken:    aws.StringValue(credentials.SessionToken),
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Print(err)
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }

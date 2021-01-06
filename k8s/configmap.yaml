@@ -3,5 +3,6 @@ kind: ConfigMap
 metadata:
   name: service
 data:
-  ARTIFACTCACHE_BUCKET: artifactcache
+  ARTIFACTCACHE_BUCKET_NAME: artifactcache
+  ARTIFACTCACHE_ROLE_ARN: arn:aws:iam::000000000000:role/artifactcache
   AWS_REGION: us-east-1

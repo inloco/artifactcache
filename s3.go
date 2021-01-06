@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -18,7 +18,6 @@ import (
 )
 
 var (
-	bucket = os.Getenv("ARTIFACTCACHE_BUCKET")
 	client = s3.New(session.Must(session.NewSession()))
 	memory = sync.Map{}
 )
@@ -42,9 +41,28 @@ type ObjectHead struct {
 	LastModified time.Time
 }
 
-func lookupObject(objectKey ObjectKey) (*ObjectHead, error) {
+func headObjectStrict(objectKey ObjectKey) (*ObjectHead, error) {
+	req := s3.HeadObjectInput{
+		Bucket: aws.String(BucketName),
+		Key:    aws.String(objectKey.String()),
+	}
+
+	res, err := client.HeadObject(&req)
+	if err != nil {
+		return nil, err
+	}
+
+	head := ObjectHead{
+		Key:          aws.StringValue(req.Key),
+		LastModified: aws.TimeValue(res.LastModified),
+	}
+
+	return &head, nil
+}
+
+func headObjectPrefix(objectKey ObjectKey) (*ObjectHead, error) {
 	req := s3.ListObjectsInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(BucketName),
 		Prefix: aws.String(objectKey.String()),
 	}
 
@@ -62,22 +80,45 @@ func lookupObject(objectKey ObjectKey) (*ObjectHead, error) {
 		k := aws.StringValue(obj.Key)
 		lm := aws.TimeValue(obj.LastModified)
 
-		if eq := k == objectKey.Key; eq || lm.After(head.LastModified) {
+		if lm.After(head.LastModified) {
 			head.Key = k
 			head.LastModified = lm
-
-			if eq {
-				break
-			}
 		}
 	}
 
 	return &head, nil
 }
 
+func lookupObject(audience string, scope string, key string, version string, restoreKeys []string) (string, *ObjectHead, error) {
+	objectKey := ObjectKey{
+		Audience: audience,
+		Scope:    scope,
+		Key:      key,
+		Version:  version,
+	}
+
+	objectHead, err := headObjectStrict(objectKey)
+	if err == nil {
+		return objectKey.Key, objectHead, nil
+	}
+	log.Print(err)
+
+	for _, key := range restoreKeys {
+		objectKey.Key = key
+
+		objectHead, err := headObjectPrefix(objectKey)
+		if err == nil {
+			return objectKey.Key, objectHead, nil
+		}
+		log.Print(err)
+	}
+
+	return "", nil, nil
+}
+
 func presignGetObjectRequest(objectHead ObjectHead) (string, error) {
 	req, _ := client.GetObjectRequest(&s3.GetObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(BucketName),
 		Key:    aws.String(objectHead.Key),
 	})
 
@@ -95,7 +136,7 @@ type UploadMemory struct {
 
 func createMultipartUpload(objectKey ObjectKey) (int, error) {
 	req := s3.CreateMultipartUploadInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(BucketName),
 		Key:    aws.String(objectKey.String()),
 	}
 
@@ -134,7 +175,7 @@ func uploadPart(cacheId int, rangeStart int, rangeEnd int, body io.Reader) error
 	}
 	uploadMemory.Part++
 	req := s3.UploadPartInput{
-		Bucket:     aws.String(bucket),
+		Bucket:     aws.String(BucketName),
 		Key:        aws.String(uploadMemory.ObjectKey.String()),
 		UploadId:   aws.String(uploadMemory.UploadId),
 		PartNumber: aws.Int64(int64(uploadMemory.Part)),
@@ -179,7 +220,7 @@ func completeMultipartUpload(cacheId int) error {
 	}
 
 	req := s3.CompleteMultipartUploadInput{
-		Bucket:          aws.String(bucket),
+		Bucket:          aws.String(BucketName),
 		Key:             aws.String(uploadMemory.ObjectKey.String()),
 		UploadId:        aws.String(uploadMemory.UploadId),
 		MultipartUpload: completedMultipartUpload,
