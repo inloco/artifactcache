@@ -76,7 +76,11 @@ func getAssumeRoleDownload(w http.ResponseWriter, r *http.Request, ps httprouter
 	audience := ps.ByName("audience")
 	scope := ps.ByName("scope")
 	key := ps.ByName("key")
-	restoreKeys := strings.Split(r.URL.Query().Get("restoreKeys"), ",")
+
+	var restoreKeys []string
+	if queryParam := r.URL.Query().Get("restoreKeys"); queryParam != "" {
+		restoreKeys = strings.Split(queryParam, ",")
+	}
 
 	lookupKey, objectHead, err := lookupObject(audience, scope, key, "", restoreKeys)
 	if err != nil {
